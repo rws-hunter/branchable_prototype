@@ -156,15 +156,15 @@ def main():
 	print("Get the current version (version 3)")
 	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000001), 3, False) # Version should be 3, on_site=False
 	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000002), 2, False) # Version should be 2, on_site=False
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000003), 1, True) # Version should be 1, on_site=True
+	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000003), 1, True)  # Version should be 1, on_site=True
 
 	print("Rollback to a prior version (version 2)")
 	rollback_site(con, 8080, 2)
 
 	print("Get the current version (version 4, but actually version 2)")
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000001), 4, True) # Version should be 4, on_site=True
+	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000001), 4, True)  # Version should be 4, on_site=True
 	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000002), 4, False) # Version should be 4, on_site=False
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000003), 4, True) # Version should be 4, on_site=True
+	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000003), 4, True)  # Version should be 4, on_site=True
 
 	print("Store version 5")
 	store_site_option(con, 8080, "ASHLEY", "000111", 1000001, True)
@@ -183,7 +183,7 @@ def main():
 	print("Get the current version (version 6, but actually version 3)")
 	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000001), 6, False) # Version should be 6, on_site=False
 	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000002), 6, False) # Version should be 6, on_site=False
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000003), 6, True) # Version should be 6, on_site=True
+	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000003), 6, True)  # Version should be 6, on_site=True
 
 	# All done
 	print("All tests passed!")
