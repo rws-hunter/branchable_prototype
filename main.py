@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from dataclasses import dataclass
 
@@ -19,8 +20,12 @@ def create_tables(con):
 		-- Lookup columns
 		-- ROWID is automatic in SQLite
 		site_id integer not null,
-		published_version_id integer default 1,
-		pending_version_id integer default 2);
+		-- Trunk version number
+		-- This is the "published" version of data
+		trunk_version_id integer default 0,
+		-- Branch version number
+		-- This is the "pending" version of data
+		branch_version_id integer default 1);
 	''')
 	# Create a table to store item option data and fills
 	con.execute('''
@@ -54,7 +59,7 @@ def store_site_option(con, site_id, brand, pn, dp_id, on_site):
 	INSERT OR REPLACE INTO site_options(site_id, brand, pn, dp_id, on_site, version_id) VALUES (
 		:site_id, :brand, :pn, :dp_id, 
 		:on_site,
-		(SELECT pending_version_id FROM sites where site_id=:site_id)
+		(SELECT branch_version_id FROM sites where site_id=:site_id)
 	); 
 	''', params)
 	con.commit()
@@ -64,10 +69,10 @@ def fetch_site_option(con, site_id, brand, pn, dp_id):
 	params = { "site_id": site_id, "brand": brand, "pn": pn, "dp_id": dp_id }
 	query = con.execute('''
 	SELECT * FROM site_options WHERE 
-	site_id=:site_id AND version_id <= (SELECT published_version_id FROM sites WHERE site_id=:site_id) AND 
-	brand=:brand AND pn=:pn AND dp_id=:dp_id 
-	ORDER BY version_id DESC
-	LIMIT 1;
+		site_id=:site_id AND brand=:brand AND pn=:pn AND dp_id=:dp_id AND
+		version_id <= (SELECT trunk_version_id FROM sites WHERE site_id=:site_id) 
+		ORDER BY version_id DESC
+		LIMIT 1;
 	''', params);
 	# Fetch the result and convert
 	result = query.fetchone()
@@ -78,24 +83,27 @@ def fetch_site_option(con, site_id, brand, pn, dp_id):
 def create_site(con, site_id):
 	params = { "site_id": site_id }
 	con.execute('''
-	INSERT OR REPLACE INTO sites(site_id, published_version_id, pending_version_id) VALUES (:site_id, 1, 2); 
+	INSERT OR REPLACE INTO sites(site_id, trunk_version_id, branch_version_id) VALUES (:site_id, 0, 1); 
 	''', params)
 	con.commit()
 
 def publish_site(con, site_id):
 	params = { "site_id": site_id }
 	con.execute('''
-	UPDATE sites SET published_version_id=pending_version_id where site_id=:site_id;
-	''', params)
-	con.execute('''
-	UPDATE sites SET pending_version_id=pending_version_id+1 where site_id=:site_id;
+	UPDATE sites SET 
+		trunk_version_id=branch_version_id, 
+		branch_version_id=branch_version_id+1 
+		where site_id=:site_id;
 	''', params)
 	con.commit()
 
-def rollback_to(con, site_id, version_id):
+def rollback_site(con, site_id, version_id):
 	pass
 
 def main():
+	# Delete the old database before creating a new one
+	if os.path.exists('wf.db'):
+		os.remove('wf.db')
 	# Open the SQL database connection
 	con = sqlite3.connect('wf.db')
 	# Make sure we have the schema set up
@@ -119,9 +127,9 @@ def main():
 	publish_site(con, 8080)
 
 	# Get the current version
-	print(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000001))
-	print(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000002))
-	print(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000003))
+	print(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000001)) # Version should be 3
+	print(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000002)) # Version should be 2
+	print(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000003)) # Version should be 1
 
 	# Close the database connection
 	con.close()
