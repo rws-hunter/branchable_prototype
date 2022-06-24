@@ -80,6 +80,7 @@ def fetch_site_option(con, site_id, brand, pn, dp_id):
 		return SiteOption(result[0], result[1], result[2], result[3], result[4], (result[5] == 1))
 	return None
 
+# Create a site entry with default values
 def create_site(con, site_id):
 	params = { "site_id": site_id }
 	con.execute('''
@@ -87,6 +88,7 @@ def create_site(con, site_id):
 	''', params)
 	con.commit()
 
+# Publish the current branch changes to the trunk
 def publish_site(con, site_id):
 	params = { "site_id": site_id }
 	con.execute('''
@@ -97,13 +99,14 @@ def publish_site(con, site_id):
 	''', params)
 	con.commit()
 
+# Rollback the site data to a prior version
 def rollback_site(con, site_id, version_id):
 	params = { "site_id": site_id, "version_id": version_id }
 	# Clear out pending changes
 	con.execute('''
 	DELETE FROM site_options WHERE version_id=(SELECT branch_version_id FROM sites WHERE site_id=:site_id);
 	''', params)
-	# Copy the rows that existed at the selected version, with the current branch version
+	# Copy the rows that existed at the selected version, with the current branch version as the version_id
 	con.execute('''
 	INSERT INTO site_options(version_id, site_id, brand, pn, dp_id, on_site) 
 	SELECT (SELECT branch_version_id FROM sites where site_id=:site_id), a.site_id, a.brand, a.pn, a.dp_id, a.on_site 
@@ -120,6 +123,7 @@ def rollback_site(con, site_id, version_id):
 	# Publish branch
 	publish_site(con, site_id)
 
+# Assertion helper for testing
 def assert_match(site_option, version_id, on_site):
 	assert(site_option.version_id == version_id and site_option.on_site == on_site)
 
