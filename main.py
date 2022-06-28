@@ -27,6 +27,23 @@ def create_tables(con):
 		-- This is the "pending" version of data
 		branch_version_id integer default 1);
 	''')
+	# Create a unique index for sites on site_id
+	con.execute('''
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_sites ON sites(site_id);
+	''')
+	# Create a table to store changelog entries
+	con.execute('''
+	CREATE TABLE IF NOT EXISTS site_changes(
+		site_id integer not null,
+		version_id integer not null,
+		description text not null,
+		is_publish integer not null default false,
+		created_at timestamp default current_timestamp);
+	''')
+	# Create a unique index for site_changes on site_id and version_id
+	con.execute('''
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_changelogs ON site_changes(site_id, version_id);
+	''')
 	# Create a table to store item option data and fills
 	con.execute('''
 	CREATE TABLE IF NOT EXISTS site_options(
@@ -34,8 +51,8 @@ def create_tables(con):
 		-- ROWID is automatic in SQLite
 		site_id integer not null,    -- Not fillable
 		version_id integer not null, -- Not fillable
-		brand string not null,       -- Fill value = *
-		pn string not null,          -- Fill value = *
+		brand text not null,         -- Fill value = *
+		pn text not null,            -- Fill value = *
 		dp_id integer not null,      -- Fill value = 0
 		-- Data columns, these need to be nullable for our fill scheme to work
 		-- SQLite doesn't have boolean types
@@ -184,6 +201,74 @@ def rollback_site(con, site_id, to_version_id):
 def assert_match(site_option, version_id, on_site):
 	assert site_option.version_id == version_id, f'version_id is {site_option.version_id}, should be {version_id}'
 	assert site_option.on_site == on_site, f'on_site is {site_option.on_site}, should be {on_site}'
+# Test cases to ensure correctness of algorithm
+def run_tests(con):
+	site_id = 8080
+	brand   = "ASHLEY"
+	pns     = ["000111", "000112", "000113"]
+	dp_ids  = [1000001, 1000002, 1000003]
+
+	print("Create the site")
+	create_site(con, site_id)
+
+	print("Store version 1")
+	store_site_option(con, site_id, brand, pns[0], dp_ids[0], True) # Store a specific value 
+	store_site_option(con, site_id, brand, pns[0], dp_ids[1], True) # Store a specific value 
+	store_site_option(con, site_id, brand, pns[0], dp_ids[2], True) # Store a specific value 
+	publish_site(con, site_id)
+
+	print("Store version 2")
+	store_site_option(con, site_id, brand, pns[0], dp_ids[1], False) # Store a specific value 
+	publish_site(con, site_id)
+
+	print("Store version 3")
+	store_site_option(con, site_id, brand, pns[0], dp_ids[0], False) # Store a specific value 
+	store_site_option(con, site_id, brand, pns[1], None, False)    # Store a fill on_site=false over the item ASHLEY:000112
+	publish_site(con, site_id)
+
+	print("Get the current version (version 3)")
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[0]), 3, False) # Version should be 3, on_site=False
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[1]), 3, False) # Version should be 3, on_site=False
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[2]), 3, True)  # Version should be 3, on_site=True
+	assert_match(fetch_site_option(con, site_id, brand, pns[1], dp_ids[2]), 3, False) # Version should be 3, on_site=False, Value taken from fill over item
+	assert_match(fetch_site_option(con, site_id, brand, pns[2], dp_ids[2]), 3, True) # Version should be 3, on_site=True, Value taken from default
+
+	print("Rollback to a prior version (version 2)")
+	rollback_site(con, site_id, 2)
+
+	print("Get the current version (version 4, but actually version 2)")
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[0]), 4, True)  # Version should be 4, on_site=True
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[1]), 4, False) # Version should be 4, on_site=False
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[2]), 4, True)  # Version should be 4, on_site=True
+	assert_match(fetch_site_option(con, site_id, brand, pns[1], dp_ids[2]), 4, True)  # Version should be 4, on_site=True, Value take from default
+	assert_match(fetch_site_option(con, site_id, brand, pns[2], dp_ids[2]), 4, True)  # Version should be 4, on_site=True, Value taken from default
+
+	print("Store version 5")
+	store_site_option(con, site_id, brand, pns[0], dp_ids[0], True) # Store a specific value 
+	store_site_option(con, site_id, brand, pns[0], dp_ids[1], True) # Store a specific value 
+	store_site_option(con, site_id, brand, pns[0], dp_ids[2], True) # Store a specific value 
+	store_site_option(con, site_id, brand, pns[2], None, False)   # Store a fill on_site=false over the item ASHLEY:000112
+	publish_site(con, site_id)
+
+	print("Get the current version (version 5)")
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[0]), 5, True)  # Version should be 5, on_site=True
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[1]), 5, True)  # Version should be 5, on_site=True
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[2]), 5, True)  # Version should be 5, on_site=True
+	assert_match(fetch_site_option(con, site_id, brand, pns[1], dp_ids[2]), 5, True)  # Version should be 5, on_site=True, Value take from default
+	assert_match(fetch_site_option(con, site_id, brand, pns[2], dp_ids[2]), 5, False) # Version should be 5, on_site=False, Value taken from fill
+
+	print("Rollback to a prior version (version 3)")
+	rollback_site(con, site_id, 3)
+
+	print("Get the current version (version 6, but actually version 3)")
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[0]), 6, False) # Version should be 6, on_site=False
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[1]), 6, False) # Version should be 6, on_site=False
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[2]), 6, True)  # Version should be 6, on_site=True
+	assert_match(fetch_site_option(con, site_id, brand, pns[1], dp_ids[2]), 6, False) # Version should be 6, on_site=False, Value take from fill over item
+	assert_match(fetch_site_option(con, site_id, brand, pns[2], dp_ids[2]), 6, True)  # Version should be 6, on_site=True, Value taken from default
+
+	# All done
+	print("All tests passed!")
 
 def main():
 	# Delete the old database before creating a new one
@@ -193,68 +278,8 @@ def main():
 	con = sqlite3.connect('wf.db')
 	# Make sure we have the schema set up
 	create_tables(con)
-
-	print("Create the site")
-	create_site(con, 8080)
-
-	print("Store version 1")
-	store_site_option(con, 8080, "ASHLEY", "000111", 1000001, True) # Store a specific value 
-	store_site_option(con, 8080, "ASHLEY", "000111", 1000002, True) # Store a specific value 
-	store_site_option(con, 8080, "ASHLEY", "000111", 1000003, True) # Store a specific value 
-	publish_site(con, 8080)
-
-	print("Store version 2")
-	store_site_option(con, 8080, "ASHLEY", "000111", 1000002, False) # Store a specific value 
-	publish_site(con, 8080)
-
-	print("Store version 3")
-	store_site_option(con, 8080, "ASHLEY", "000111", 1000001, False) # Store a specific value 
-	store_site_option(con, 8080, "ASHLEY", "000112", None, False)    # Store a fill on_site=false over the item ASHLEY:000112
-	publish_site(con, 8080)
-
-	print("Get the current version (version 3)")
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000001), 3, False) # Version should be 3, on_site=False
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000002), 3, False) # Version should be 3, on_site=False
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000003), 3, True)  # Version should be 3, on_site=True
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000112", 1000003), 3, False) # Version should be 3, on_site=False, Value taken from fill over item
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000113", 1000003), 3, True) # Version should be 3, on_site=True, Value taken from default
-
-	print("Rollback to a prior version (version 2)")
-	rollback_site(con, 8080, 2)
-
-	print("Get the current version (version 4, but actually version 2)")
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000001), 4, True)  # Version should be 4, on_site=True
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000002), 4, False) # Version should be 4, on_site=False
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000003), 4, True)  # Version should be 4, on_site=True
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000112", 1000003), 4, True)  # Version should be 4, on_site=True, Value take from default
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000113", 1000003), 4, True)  # Version should be 4, on_site=True, Value taken from default
-
-	print("Store version 5")
-	store_site_option(con, 8080, "ASHLEY", "000111", 1000001, True) # Store a specific value 
-	store_site_option(con, 8080, "ASHLEY", "000111", 1000002, True) # Store a specific value 
-	store_site_option(con, 8080, "ASHLEY", "000111", 1000003, True) # Store a specific value 
-	store_site_option(con, 8080, "ASHLEY", "000113", None, False)   # Store a fill on_site=false over the item ASHLEY:000112
-	publish_site(con, 8080)
-
-	print("Get the current version (version 5)")
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000001), 5, True)  # Version should be 5, on_site=True
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000002), 5, True)  # Version should be 5, on_site=True
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000003), 5, True)  # Version should be 5, on_site=True
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000112", 1000003), 5, True)  # Version should be 5, on_site=True, Value take from default
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000113", 1000003), 5, False) # Version should be 5, on_site=False, Value taken from fill
-
-	print("Rollback to a prior version (version 3)")
-	rollback_site(con, 8080, 3)
-
-	print("Get the current version (version 6, but actually version 3)")
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000001), 6, False) # Version should be 6, on_site=False
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000002), 6, False) # Version should be 6, on_site=False
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000003), 6, True)  # Version should be 6, on_site=True
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000112", 1000003), 6, False) # Version should be 6, on_site=False, Value take from fill over item
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000113", 1000003), 6, True)  # Version should be 6, on_site=True, Value taken from default
-
-	# All done
-	print("All tests passed!")
+	# Run test cases
+	run_tests(con)
 	# Close the database connection
 	con.close()
 
