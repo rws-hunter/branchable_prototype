@@ -39,7 +39,7 @@ def create_tables(con):
 		dp_id integer not null,      -- Fill value = 0
 		-- Data columns, these need to be nullable for our fill scheme to work
 		-- SQLite doesn't have boolean types
-		on_site integer default true);
+		on_site integer);
 	''')
 	# Create a unique index over the lookup values. 
 	# This allows the insert-or-replace commands to work and ensure fills don't overlap.
@@ -48,31 +48,48 @@ def create_tables(con):
 	''')
 	con.commit()
 
+# Get the trunk ID for the site
+def get_site_trunk_version(con, site_id):
+	query  = con.execute('''SELECT trunk_version_id FROM sites WHERE site_id=:site_id''', { "site_id": site_id })
+	result = query.fetchone()
+	assert(result is not None)
+	return result[0]
+
+# Get the branch ID for the site
+def get_site_branch_version(con, site_id):
+	query  = con.execute('''SELECT branch_version_id FROM sites WHERE site_id=:site_id''', { "site_id": site_id })
+	result = query.fetchone()
+	assert(result is not None)
+	return result[0]
+
 # Store a site option or fill into the database
 def store_site_option(con, site_id, brand, pn, dp_id, on_site):
+	# First, get the branch version. Ideally this would be cached before hand to eliminate the extra query.
+	# NOTE: We always store to the branch (cms) version. 
+	branch_version_id = get_site_branch_version(con, site_id)
 	params = { 
-		"site_id": site_id, 
+		"site_id": site_id, "version_id": branch_version_id,
 		"brand": brand, "pn": pn, "dp_id": dp_id, 
 		"on_site": on_site
 	}
 	con.execute('''
-	INSERT OR REPLACE INTO site_options(site_id, brand, pn, dp_id, on_site, version_id) VALUES (
-		:site_id, :brand, :pn, :dp_id, 
-		:on_site,
-		(SELECT branch_version_id FROM sites where site_id=:site_id)
+	INSERT OR REPLACE INTO site_options(site_id, version_id, brand, pn, dp_id, on_site) VALUES (
+		:site_id, :version_id, :brand, :pn, :dp_id, 
+		:on_site
 	); 
 	''', params)
 	con.commit()
 
 # Fetch a single site option from the database
 def fetch_site_option(con, site_id, brand, pn, dp_id):
-	params = { "site_id": site_id, "brand": brand, "pn": pn, "dp_id": dp_id }
+	# Get the trunk version. Ideally this would be cached before hand to eliminate the extra query.
+	# NOTE: We always fetch from the trunk (live) version. 
+	trunk_version_id = get_site_trunk_version(con, site_id)
+	params = { "site_id": site_id, "version_id": trunk_version_id, "brand": brand, "pn": pn, "dp_id": dp_id }
 	query = con.execute('''
-	SELECT * FROM site_options WHERE 
-		site_id=:site_id AND brand=:brand AND pn=:pn AND dp_id=:dp_id AND
-		version_id <= (SELECT trunk_version_id FROM sites WHERE site_id=:site_id) 
-		ORDER BY version_id DESC
-		LIMIT 1;
+	SELECT * FROM site_options 
+		WHERE site_id=:site_id AND brand=:brand AND pn=:pn AND dp_id=:dp_id AND version_id<=:version_id
+		ORDER BY version_id DESC LIMIT 1;
 	''', params);
 	# Fetch the result and convert
 	result = query.fetchone()
@@ -93,7 +110,7 @@ def publish_site(con, site_id):
 	params = { "site_id": site_id }
 	con.execute('''
 	UPDATE sites SET 
-		trunk_version_id=branch_version_id, 
+		trunk_version_id =branch_version_id, 
 		branch_version_id=branch_version_id+1 
 		WHERE site_id=:site_id;
 	''', params)
@@ -119,7 +136,6 @@ def rollback_site(con, site_id, version_id):
 	) b
 	ON a.brand=b.brand AND a.pn=b.pn AND a.dp_id=b.dp_id AND a.version_id=b.version_id;
 	''', params)
-	con.commit()
 	# Publish branch
 	publish_site(con, site_id)
 
