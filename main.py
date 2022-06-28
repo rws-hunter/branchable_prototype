@@ -65,6 +65,7 @@ def create_tables(con):
 	''')
 	con.commit()
 
+# Helper method to get a human-readable description for a change to a site option
 def get_change_desc_for_site_option(brand, pn, dp_id, on_site):
 	is_fill = brand is None or pn is None or dp_id is None
 	action = "Fill" if is_fill else "Set"
@@ -83,15 +84,37 @@ def get_change_desc_for_site_option(brand, pn, dp_id, on_site):
 def store_site_option(con, site_id, brand, pn, dp_id, on_site):
 	# First, check that the site_id is valid
 	assert site_id is not None
+	# First, get the branch version. Ideally this would be cached before hand to eliminate the extra query.
+	# NOTE: We always store to the branch (cms) version. 
+	branch_version_id = get_site_branch_version(con, site_id)
 	# Get the description before we mess with the parameters
 	desc = get_change_desc_for_site_option(brand, pn, dp_id, on_site)
+
+	# If the row is a fill, first "delete" any rows that the fill would affect
+	if brand is None or pn is None or dp_id is None :
+		params = { "site_id": site_id, "branch_version_id": branch_version_id, "brand": brand, "pn": pn, "dp_id":dp_id }
+
+		# Build a string to match predicates specified in the parameters
+		predicates = "site_id=:site_id AND version_id<=:branch_version_id"
+		if brand:
+			predicates = predicates + " AND brand=:brand"
+		if pn:
+			predicates = predicates + " AND pn=:pn"
+		if dp_id:
+			predicates = predicates + " AND dp_id=:dp_id"
+
+		con.execute(f'''
+		INSERT OR REPLACE INTO site_options(version_id, site_id, brand, pn, dp_id, on_site) 
+		SELECT :branch_version_id, site_id, brand, pn, dp_id, null
+		FROM site_options 
+		WHERE {predicates};
+		''', params)
+
 	# Validate any fillable columns, swap them with their fill values if they are null (signaling a fill)
 	brand = brand if brand is not None else '*'
 	pn = pn if pn is not None else '*'
 	dp_id = dp_id if dp_id is not None else 0
-	# First, get the branch version. Ideally this would be cached before hand to eliminate the extra query.
-	# NOTE: We always store to the branch (cms) version. 
-	branch_version_id = get_site_branch_version(con, site_id)
+	# Insert the row
 	params = { 
 		"site_id": site_id, "version_id": branch_version_id,
 		"brand": brand, "pn": pn, "dp_id": dp_id, 
@@ -167,6 +190,7 @@ def get_site_branch_version(con, site_id):
 	assert(result is not None)
 	return result[0]
 
+# Print the change log entries for a version to the std out
 def print_changelog_for_version(con, site_id, version_id):
 	# Get changelog entries for version
 	params = { "site_id": site_id, "version_id": version_id }
@@ -247,6 +271,7 @@ def rollback_site(con, site_id, to_version_id):
 	# Create a description for the publish
 	desc = f"Rolled back site settings to version #{to_version_id}"
 	# Publish branch
+	# NOTE: This is where the transaction is committed to keep database consistency
 	publish_site(con, site_id, desc)
 
 # Assertion helper for testing
@@ -280,7 +305,7 @@ def run_tests(con):
 
 	print("Store version 3")
 	store_site_option(con, site_id, brand, pns[0], dp_ids[0], False) # Store a specific value 
-	store_site_option(con, site_id, brand, pns[1], None, False)    # Store a fill on_site=false over the item ASHLEY:000112
+	store_site_option(con, site_id, brand, pns[1], None, False)      # Store a fill on_site=false over the item ASHLEY:000112
 	publish_site(con, site_id)
 	
 	print_changelog_for_version(con, site_id, 3)
@@ -290,7 +315,7 @@ def run_tests(con):
 	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[1]), 3, False) # Version should be 3, on_site=False
 	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[2]), 3, True)  # Version should be 3, on_site=True
 	assert_match(fetch_site_option(con, site_id, brand, pns[1], dp_ids[2]), 3, False) # Version should be 3, on_site=False, Value taken from fill over item
-	assert_match(fetch_site_option(con, site_id, brand, pns[2], dp_ids[2]), 3, True) # Version should be 3, on_site=True, Value taken from default
+	assert_match(fetch_site_option(con, site_id, brand, pns[2], dp_ids[2]), 3, True)  # Version should be 3, on_site=True, Value taken from default
 
 	print("Rollback to a prior version (version 2 as version 4)")
 	rollback_site(con, site_id, 2)
@@ -308,7 +333,7 @@ def run_tests(con):
 	store_site_option(con, site_id, brand, pns[0], dp_ids[0], True) # Store a specific value 
 	store_site_option(con, site_id, brand, pns[0], dp_ids[1], True) # Store a specific value 
 	store_site_option(con, site_id, brand, pns[0], dp_ids[2], True) # Store a specific value 
-	store_site_option(con, site_id, brand, pns[2], None, False)   # Store a fill on_site=false over the item ASHLEY:000112
+	store_site_option(con, site_id, brand, pns[2], None, False)     # Store a fill on_site=false over the item ASHLEY:000112
 	publish_site(con, site_id)
 
 	print_changelog_for_version(con, site_id, 5)
@@ -331,6 +356,52 @@ def run_tests(con):
 	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[2]), 6, True)  # Version should be 6, on_site=True
 	assert_match(fetch_site_option(con, site_id, brand, pns[1], dp_ids[2]), 6, False) # Version should be 6, on_site=False, Value take from fill over item
 	assert_match(fetch_site_option(con, site_id, brand, pns[2], dp_ids[2]), 6, True)  # Version should be 6, on_site=True, Value taken from default
+
+	print("Store version 7")
+	store_site_option(con, site_id, brand, pns[0], None, False) # Store a fill on_site=false over the item ASHLEY:000112
+	publish_site(con, site_id)
+
+	print("Get the current version (version 7)")
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[0]), 7, False) # Version should be 7, on_site=False, value taken from fill over item
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[1]), 7, False) # Version should be 7, on_site=False, value taken from fill over item
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[2]), 7, False) # Version should be 7, on_site=False, value taken from fill over item
+	assert_match(fetch_site_option(con, site_id, brand, pns[1], dp_ids[2]), 7, False) # Version should be 7, on_site=False, Value take from fill over item
+	assert_match(fetch_site_option(con, site_id, brand, pns[2], dp_ids[2]), 7, True)  # Version should be 7, on_site=True, Value taken from default
+
+	print("Store version 8")
+	store_site_option(con, site_id, brand, pns[0], None, True) # Store a fill on_site=true over the item ASHLEY:000112
+	publish_site(con, site_id)
+
+	print_changelog_for_version(con, site_id, 8)
+
+	print("Get the current version (version 8)")
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[0]), 8, True)  # Version should be 8, on_site=True, value taken from fill over item
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[1]), 8, True)  # Version should be 8, on_site=True, value taken from fill over item
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[2]), 8, True)  # Version should be 8, on_site=True, value taken from fill over item
+	assert_match(fetch_site_option(con, site_id, brand, pns[1], dp_ids[2]), 8, False) # Version should be 8, on_site=False, Value take from fill over item
+	assert_match(fetch_site_option(con, site_id, brand, pns[2], dp_ids[2]), 8, True)  # Version should be 8, on_site=True, Value taken from default
+	
+	print("Rollback to a prior version (version 7 as version 9)")
+	rollback_site(con, site_id, 7)
+
+	print("Get the current version (version 7, but actually version 9)")
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[0]), 9, False) # Version should be 9, on_site=False, value taken from fill over item
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[1]), 9, False) # Version should be 9, on_site=False, value taken from fill over item
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[2]), 9, False) # Version should be 9, on_site=False, value taken from fill over item
+	assert_match(fetch_site_option(con, site_id, brand, pns[1], dp_ids[2]), 9, False) # Version should be 9, on_site=False, Value take from fill over item
+	assert_match(fetch_site_option(con, site_id, brand, pns[2], dp_ids[2]), 9, True)  # Version should be 9, on_site=True, Value taken from default
+
+	print("Rollback to a prior version (version 3 as version 10)")
+	rollback_site(con, site_id, 3)
+
+	print_changelog_for_version(con, site_id, 10)
+
+	print("Get the current version (version 3 as version 10)")
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[0]), 10, False) # Version should be 10, on_site=False
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[1]), 10, False) # Version should be 10, on_site=False
+	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[2]), 10, True)  # Version should be 10, on_site=True
+	assert_match(fetch_site_option(con, site_id, brand, pns[1], dp_ids[2]), 10, False) # Version should be 10, on_site=False, Value taken from fill over item
+	assert_match(fetch_site_option(con, site_id, brand, pns[2], dp_ids[2]), 10, True)  # Version should be 10, on_site=True, Value taken from default
 
 	# All done
 	print("All tests passed!")
