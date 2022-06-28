@@ -48,20 +48,6 @@ def create_tables(con):
 	''')
 	con.commit()
 
-# Get the trunk ID for the site
-def get_site_trunk_version(con, site_id):
-	query  = con.execute('''SELECT trunk_version_id FROM sites WHERE site_id=:site_id''', { "site_id": site_id })
-	result = query.fetchone()
-	assert(result is not None)
-	return result[0]
-
-# Get the branch ID for the site
-def get_site_branch_version(con, site_id):
-	query  = con.execute('''SELECT branch_version_id FROM sites WHERE site_id=:site_id''', { "site_id": site_id })
-	result = query.fetchone()
-	assert(result is not None)
-	return result[0]
-
 # Store a site option or fill into the database
 def store_site_option(con, site_id, brand, pn, dp_id, on_site):
 	# First, get the branch version. Ideally this would be cached before hand to eliminate the extra query.
@@ -104,6 +90,20 @@ def create_site(con, site_id):
 	INSERT OR REPLACE INTO sites(site_id, trunk_version_id, branch_version_id) VALUES (:site_id, 0, 1); 
 	''', params)
 	con.commit()
+
+# Get the trunk ID for the site
+def get_site_trunk_version(con, site_id):
+	query  = con.execute('''SELECT trunk_version_id FROM sites WHERE site_id=:site_id''', { "site_id": site_id })
+	result = query.fetchone()
+	assert(result is not None)
+	return result[0]
+
+# Get the branch ID for the site
+def get_site_branch_version(con, site_id):
+	query  = con.execute('''SELECT branch_version_id FROM sites WHERE site_id=:site_id''', { "site_id": site_id })
+	result = query.fetchone()
+	assert(result is not None)
+	return result[0]
 
 # Publish the current branch changes to the trunk
 def publish_site(con, site_id):
