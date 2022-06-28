@@ -40,9 +40,9 @@ def create_tables(con):
 		is_publish integer not null default false,
 		created_at timestamp default current_timestamp);
 	''')
-	# Create a unique index for site_changes on site_id and version_id
+	# Create a index for site_changes on site_id and version_id
 	con.execute('''
-	CREATE UNIQUE INDEX IF NOT EXISTS idx_changelogs ON site_changes(site_id, version_id);
+	CREATE INDEX IF NOT EXISTS idx_changelogs ON site_changes(site_id, version_id);
 	''')
 	# Create a table to store item option data and fills
 	con.execute('''
@@ -65,10 +65,26 @@ def create_tables(con):
 	''')
 	con.commit()
 
+def get_change_desc_for_site_option(brand, pn, dp_id, on_site):
+	is_fill = brand is None or pn is None or dp_id is None
+	action = "Fill" if is_fill else "Set"
+
+	desc = f"{action}"
+	if brand:
+		desc = desc + f" {brand}"
+	if pn:
+		desc = desc + f":{pn}"
+	if dp_id:
+		desc = desc + f" option {dp_id}"
+	desc = desc + f" on_site={on_site}"
+	return desc
+
 # Store a site option or fill into the database
 def store_site_option(con, site_id, brand, pn, dp_id, on_site):
 	# First, check that the site_id is valid
 	assert site_id is not None
+	# Get the description before we mess with the parameters
+	desc = get_change_desc_for_site_option(brand, pn, dp_id, on_site)
 	# Validate any fillable columns, swap them with their fill values if they are null (signaling a fill)
 	brand = brand if brand is not None else '*'
 	pn = pn if pn is not None else '*'
@@ -85,10 +101,18 @@ def store_site_option(con, site_id, brand, pn, dp_id, on_site):
 	INSERT OR REPLACE INTO site_options(site_id, version_id, brand, pn, dp_id, on_site) 
 	VALUES (:site_id, :version_id, :brand, :pn, :dp_id, :on_site); 
 	''', params)
+	# Insert a changelog entry for the change
+	con.execute('''
+	INSERT INTO site_changes(site_id, version_id, description) 
+	VALUES (:site_id, :version_id, :desc)
+	''', {"site_id": site_id, "version_id": branch_version_id, "desc": desc})
+	# Execute the transaction
 	con.commit()
 
 # Fetch a single site option from the database
 def fetch_site_option(con, site_id, brand, pn, dp_id):
+	# First, check that the site_id is valid
+	assert site_id is not None
 	# Get the trunk version. Ideally this would be cached before hand to eliminate the extra query.
 	# NOTE: We always fetch from the trunk (live) version. 
 	trunk_version_id = get_site_trunk_version(con, site_id)
@@ -143,8 +167,25 @@ def get_site_branch_version(con, site_id):
 	assert(result is not None)
 	return result[0]
 
+def print_changelog_for_version(con, site_id, version_id):
+	# Get changelog entries for version
+	params = { "site_id": site_id, "version_id": version_id }
+	query = con.execute('''
+	SELECT * FROM site_changes WHERE site_id=:site_id AND version_id=:version_id;
+	''', params)
+	rows = query.fetchall()
+	# Pretty print
+	print(f"Changelog for version #{version_id}:")
+	if not rows:
+		print("\tEmpty")
+	for row in rows:
+		print(f"[{row[4]}] {row[2]}")
+
 # Publish the current branch changes to the trunk
-def publish_site(con, site_id):
+def publish_site(con, site_id, desc):
+	# First, get the branch version. Ideally this would be cached before hand to eliminate the extra query. 
+	branch_version_id = get_site_branch_version(con, site_id)
+	# Swap the trunk version for the branch version, increment the branch version
 	params = { "site_id": site_id }
 	con.execute('''
 	UPDATE sites SET 
@@ -152,6 +193,11 @@ def publish_site(con, site_id):
 		branch_version_id=branch_version_id+1 
 		WHERE site_id=:site_id;
 	''', params)
+	# Insert a changelog entry for the change
+	con.execute('''
+	INSERT INTO site_changes(site_id, version_id, description, is_publish) 
+	VALUES (:site_id, :version_id, :desc, true)
+	''', {"site_id": site_id, "version_id": branch_version_id, "desc": desc})
 	con.commit()
 
 # Rollback the site data to a prior version
@@ -185,17 +231,21 @@ def rollback_site(con, site_id, to_version_id):
 	con.execute('''
 	INSERT INTO site_options(version_id, site_id, brand, pn, dp_id, on_site) 
 	SELECT :branch_version_id, a.site_id, a.brand, a.pn, a.dp_id, null 
-	FROM (SELECT MAX(version_id) as version_id, site_id, brand, pn, dp_id
+	FROM (
+		SELECT MAX(version_id) as version_id, site_id, brand, pn, dp_id
 			FROM site_options 
 			WHERE version_id<=:branch_version_id AND site_id=:site_id
 			GROUP BY brand, pn, dp_id
 		EXCEPT
 		SELECT version_id, site_id, brand, pn, dp_id
 			FROM site_options
-			WHERE version_id=:branch_version_id AND site_id=:site_id) a;
+			WHERE version_id=:branch_version_id AND site_id=:site_id
+	) a;
 	''', params)
+	# Create a description for the publish
+	desc = f"Rolled back site settings to version #{to_version_id}"
 	# Publish branch
-	publish_site(con, site_id)
+	publish_site(con, site_id, desc)
 
 # Assertion helper for testing
 def assert_match(site_option, version_id, on_site):
@@ -215,16 +265,22 @@ def run_tests(con):
 	store_site_option(con, site_id, brand, pns[0], dp_ids[0], True) # Store a specific value 
 	store_site_option(con, site_id, brand, pns[0], dp_ids[1], True) # Store a specific value 
 	store_site_option(con, site_id, brand, pns[0], dp_ids[2], True) # Store a specific value 
-	publish_site(con, site_id)
+	publish_site(con, site_id, "Published changes")
+
+	print_changelog_for_version(con, site_id, 1)
 
 	print("Store version 2")
 	store_site_option(con, site_id, brand, pns[0], dp_ids[1], False) # Store a specific value 
-	publish_site(con, site_id)
+	publish_site(con, site_id, "Published changes")
+
+	print_changelog_for_version(con, site_id, 2)
 
 	print("Store version 3")
 	store_site_option(con, site_id, brand, pns[0], dp_ids[0], False) # Store a specific value 
 	store_site_option(con, site_id, brand, pns[1], None, False)    # Store a fill on_site=false over the item ASHLEY:000112
-	publish_site(con, site_id)
+	publish_site(con, site_id, "Published changes")
+	
+	print_changelog_for_version(con, site_id, 3)
 
 	print("Get the current version (version 3)")
 	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[0]), 3, False) # Version should be 3, on_site=False
@@ -233,8 +289,10 @@ def run_tests(con):
 	assert_match(fetch_site_option(con, site_id, brand, pns[1], dp_ids[2]), 3, False) # Version should be 3, on_site=False, Value taken from fill over item
 	assert_match(fetch_site_option(con, site_id, brand, pns[2], dp_ids[2]), 3, True) # Version should be 3, on_site=True, Value taken from default
 
-	print("Rollback to a prior version (version 2)")
+	print("Rollback to a prior version (version 2 as version 4)")
 	rollback_site(con, site_id, 2)
+
+	print_changelog_for_version(con, site_id, 4)
 
 	print("Get the current version (version 4, but actually version 2)")
 	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[0]), 4, True)  # Version should be 4, on_site=True
@@ -248,7 +306,9 @@ def run_tests(con):
 	store_site_option(con, site_id, brand, pns[0], dp_ids[1], True) # Store a specific value 
 	store_site_option(con, site_id, brand, pns[0], dp_ids[2], True) # Store a specific value 
 	store_site_option(con, site_id, brand, pns[2], None, False)   # Store a fill on_site=false over the item ASHLEY:000112
-	publish_site(con, site_id)
+	publish_site(con, site_id, "Published changes")
+
+	print_changelog_for_version(con, site_id, 5)
 
 	print("Get the current version (version 5)")
 	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[0]), 5, True)  # Version should be 5, on_site=True
@@ -257,8 +317,10 @@ def run_tests(con):
 	assert_match(fetch_site_option(con, site_id, brand, pns[1], dp_ids[2]), 5, True)  # Version should be 5, on_site=True, Value take from default
 	assert_match(fetch_site_option(con, site_id, brand, pns[2], dp_ids[2]), 5, False) # Version should be 5, on_site=False, Value taken from fill
 
-	print("Rollback to a prior version (version 3)")
+	print("Rollback to a prior version (version 3 as version 6)")
 	rollback_site(con, site_id, 3)
+
+	print_changelog_for_version(con, site_id, 6)
 
 	print("Get the current version (version 6, but actually version 3)")
 	assert_match(fetch_site_option(con, site_id, brand, pns[0], dp_ids[0]), 6, False) # Version should be 6, on_site=False
