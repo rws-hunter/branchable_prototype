@@ -50,6 +50,12 @@ def create_tables(con):
 
 # Store a site option or fill into the database
 def store_site_option(con, site_id, brand, pn, dp_id, on_site):
+	# First, check that the site_id is valid
+	assert site_id is not None
+	# Validate any fillable columns, swap them with their fill values if they are null (signaling a fill)
+	brand = brand if brand is not None else '*'
+	pn = pn if pn is not None else '*'
+	dp_id = dp_id if dp_id is not None else 0
 	# First, get the branch version. Ideally this would be cached before hand to eliminate the extra query.
 	# NOTE: We always store to the branch (cms) version. 
 	branch_version_id = get_site_branch_version(con, site_id)
@@ -59,10 +65,8 @@ def store_site_option(con, site_id, brand, pn, dp_id, on_site):
 		"on_site": on_site
 	}
 	con.execute('''
-	INSERT OR REPLACE INTO site_options(site_id, version_id, brand, pn, dp_id, on_site) VALUES (
-		:site_id, :version_id, :brand, :pn, :dp_id, 
-		:on_site
-	); 
+	INSERT OR REPLACE INTO site_options(site_id, version_id, brand, pn, dp_id, on_site) 
+	VALUES (:site_id, :version_id, :brand, :pn, :dp_id, :on_site); 
 	''', params)
 	con.commit()
 
@@ -72,8 +76,10 @@ def fetch_site_option(con, site_id, brand, pn, dp_id):
 	# NOTE: We always fetch from the trunk (live) version. 
 	trunk_version_id = get_site_trunk_version(con, site_id)
 	params = { "site_id": site_id, "version_id": trunk_version_id, "brand": brand, "pn": pn, "dp_id": dp_id }
-	# Execute coalesce query to get first non-null result
-	# NOTE: This query takes into account fills
+	# Use a coalesce'd select query to get the data for the site option, taking into account fills
+	# Q: Why use ORDER BY version_id DESC LIMIT 1 instead of MAX(version_id)? 
+	# A: This is done because the trunk version won't actually be the highest version_id, the branch version will. 
+	# And ORDER BY/LIMIT isn't actually that slow in my testing, provided the version_id is indexed
 	query = con.execute('''
 	WITH _fill_tbl(site_id, version_id, brand, pn, dp_id, on_site) AS (VALUES (
 		:site_id, :version_id, :brand, :pn, :dp_id,
@@ -133,14 +139,17 @@ def publish_site(con, site_id):
 
 # Rollback the site data to a prior version
 def rollback_site(con, site_id, to_version_id):
-	# Get the current branch version
+	# First, get the branch version. Ideally this would be cached before hand to eliminate the extra query.
+	# NOTE: We always store to the branch (cms) version. 
 	branch_version_id = get_site_branch_version(con, site_id)
 	params = { "site_id": site_id, "to_version_id": to_version_id, "branch_version_id": branch_version_id }
-	# Clear out pending changes
+	# Clear out any pending changes. 
+	# This needs to be done since all "rolled back" data is added to the branch version before being published.
 	con.execute('''
 	DELETE FROM site_options WHERE version_id=:branch_version_id;
 	''', params)
 	# Copy the rows that existed at the selected version, with the current branch version as the version_id
+	# This makes a more recent copy of the data that existed at the point we're rolling back to
 	con.execute('''
 	INSERT INTO site_options(version_id, site_id, brand, pn, dp_id, on_site) 
 	SELECT :branch_version_id, a.site_id, a.brand, a.pn, a.dp_id, a.on_site 
@@ -153,7 +162,9 @@ def rollback_site(con, site_id, to_version_id):
 	) b
 	ON a.brand=b.brand AND a.pn=b.pn AND a.dp_id=b.dp_id AND a.version_id=b.version_id;
 	''', params)
-	# Get the items that don't exist in the new version, and add them with null values (effectively "deleting" them)
+	# Get the items that don't exist in the new version, and insert them with the branch version_id and null data values
+	# This effectively "deletes" any rows that shouldn't exist at the version we're rolling back to. 
+	# We don't actually want to delete any data, since that would make it impossible to rollback to previous points after this rollback
 	con.execute('''
 	INSERT INTO site_options(version_id, site_id, brand, pn, dp_id, on_site) 
 	SELECT :branch_version_id, a.site_id, a.brand, a.pn, a.dp_id, null 
@@ -187,18 +198,18 @@ def main():
 	create_site(con, 8080)
 
 	print("Store version 1")
-	store_site_option(con, 8080, "ASHLEY", "000111", 1000001, True)
-	store_site_option(con, 8080, "ASHLEY", "000111", 1000002, True)
-	store_site_option(con, 8080, "ASHLEY", "000111", 1000003, True)
+	store_site_option(con, 8080, "ASHLEY", "000111", 1000001, True) # Store a specific value 
+	store_site_option(con, 8080, "ASHLEY", "000111", 1000002, True) # Store a specific value 
+	store_site_option(con, 8080, "ASHLEY", "000111", 1000003, True) # Store a specific value 
 	publish_site(con, 8080)
 
 	print("Store version 2")
-	store_site_option(con, 8080, "ASHLEY", "000111", 1000002, False)
+	store_site_option(con, 8080, "ASHLEY", "000111", 1000002, False) # Store a specific value 
 	publish_site(con, 8080)
 
 	print("Store version 3")
-	store_site_option(con, 8080, "ASHLEY", "000111", 1000001, False)
-	store_site_option(con, 8080, "ASHLEY", "000112", 0, False) # Store a fill on_site=false over the item ASHLEY:000112
+	store_site_option(con, 8080, "ASHLEY", "000111", 1000001, False) # Store a specific value 
+	store_site_option(con, 8080, "ASHLEY", "000112", None, False)    # Store a fill on_site=false over the item ASHLEY:000112
 	publish_site(con, 8080)
 
 	print("Get the current version (version 3)")
@@ -219,10 +230,10 @@ def main():
 	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000113", 1000003), 4, True)  # Version should be 4, on_site=True, Value taken from default
 
 	print("Store version 5")
-	store_site_option(con, 8080, "ASHLEY", "000111", 1000001, True)
-	store_site_option(con, 8080, "ASHLEY", "000111", 1000002, True)
-	store_site_option(con, 8080, "ASHLEY", "000111", 1000003, True)
-	store_site_option(con, 8080, "ASHLEY", "000113", 0, False) # Store a fill on_site=false over the item ASHLEY:000112
+	store_site_option(con, 8080, "ASHLEY", "000111", 1000001, True) # Store a specific value 
+	store_site_option(con, 8080, "ASHLEY", "000111", 1000002, True) # Store a specific value 
+	store_site_option(con, 8080, "ASHLEY", "000111", 1000003, True) # Store a specific value 
+	store_site_option(con, 8080, "ASHLEY", "000113", None, False)   # Store a fill on_site=false over the item ASHLEY:000112
 	publish_site(con, 8080)
 
 	print("Get the current version (version 5)")
@@ -239,8 +250,8 @@ def main():
 	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000001), 6, False) # Version should be 6, on_site=False
 	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000002), 6, False) # Version should be 6, on_site=False
 	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000111", 1000003), 6, True)  # Version should be 6, on_site=True
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000112", 1000003), 6, False) # Version should be 5, on_site=False, Value take from fill over item
-	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000113", 1000003), 6, True)  # Version should be 5, on_site=True, Value taken from default
+	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000112", 1000003), 6, False) # Version should be 6, on_site=False, Value take from fill over item
+	assert_match(fetch_site_option(con, 8080, "ASHLEY", "000113", 1000003), 6, True)  # Version should be 6, on_site=True, Value taken from default
 
 	# All done
 	print("All tests passed!")
