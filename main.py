@@ -182,9 +182,11 @@ def print_changelog_for_version(con, site_id, version_id):
 		print(f"[{row[4]}] {row[2]}")
 
 # Publish the current branch changes to the trunk
-def publish_site(con, site_id, desc):
+def publish_site(con, site_id, desc=None):
 	# First, get the branch version. Ideally this would be cached before hand to eliminate the extra query. 
 	branch_version_id = get_site_branch_version(con, site_id)
+	# Get the description for the publish if none was provided
+	desc = desc if desc else f"Publish changes for version #{branch_version_id}"
 	# Swap the trunk version for the branch version, increment the branch version
 	params = { "site_id": site_id }
 	con.execute('''
@@ -253,6 +255,7 @@ def assert_match(site_option, version_id, on_site):
 	assert site_option.on_site == on_site, f'on_site is {site_option.on_site}, should be {on_site}'
 # Test cases to ensure correctness of algorithm
 def run_tests(con):
+	# Set up some test data
 	site_id = 8080
 	brand   = "ASHLEY"
 	pns     = ["000111", "000112", "000113"]
@@ -265,20 +268,20 @@ def run_tests(con):
 	store_site_option(con, site_id, brand, pns[0], dp_ids[0], True) # Store a specific value 
 	store_site_option(con, site_id, brand, pns[0], dp_ids[1], True) # Store a specific value 
 	store_site_option(con, site_id, brand, pns[0], dp_ids[2], True) # Store a specific value 
-	publish_site(con, site_id, "Published changes")
+	publish_site(con, site_id)
 
 	print_changelog_for_version(con, site_id, 1)
 
 	print("Store version 2")
 	store_site_option(con, site_id, brand, pns[0], dp_ids[1], False) # Store a specific value 
-	publish_site(con, site_id, "Published changes")
+	publish_site(con, site_id)
 
 	print_changelog_for_version(con, site_id, 2)
 
 	print("Store version 3")
 	store_site_option(con, site_id, brand, pns[0], dp_ids[0], False) # Store a specific value 
 	store_site_option(con, site_id, brand, pns[1], None, False)    # Store a fill on_site=false over the item ASHLEY:000112
-	publish_site(con, site_id, "Published changes")
+	publish_site(con, site_id)
 	
 	print_changelog_for_version(con, site_id, 3)
 
@@ -306,7 +309,7 @@ def run_tests(con):
 	store_site_option(con, site_id, brand, pns[0], dp_ids[1], True) # Store a specific value 
 	store_site_option(con, site_id, brand, pns[0], dp_ids[2], True) # Store a specific value 
 	store_site_option(con, site_id, brand, pns[2], None, False)   # Store a fill on_site=false over the item ASHLEY:000112
-	publish_site(con, site_id, "Published changes")
+	publish_site(con, site_id)
 
 	print_changelog_for_version(con, site_id, 5)
 
