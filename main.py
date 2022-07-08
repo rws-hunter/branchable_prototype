@@ -105,9 +105,15 @@ def store_site_option(con, site_id, brand, pn, dp_id, on_site):
 
 		con.execute(f'''
 		INSERT OR REPLACE INTO site_options(version_id, site_id, brand, pn, dp_id, on_site) 
-		SELECT :branch_version_id, site_id, brand, pn, dp_id, null
-		FROM site_options 
-		WHERE {predicates};
+		SELECT :branch_version_id, a.site_id, a.brand, a.pn, a.dp_id, null
+		FROM site_options a
+		INNER JOIN (
+			SELECT MAX(version_id) as version_id, site_id, brand, pn, dp_id
+			FROM site_options
+			WHERE {predicates}
+			GROUP BY site_id, brand, pn, dp_id
+		) b
+		ON a.site_id=b.site_id AND a.version_id=b.version_id AND a.brand=b.brand AND a.pn=b.pn AND a.dp_id=a.dp_id;
 		''', params)
 
 	# Validate any fillable columns, swap them with their fill values if they are null (signaling a fill)
@@ -217,7 +223,7 @@ def publish_site(con, site_id, desc=None):
 	UPDATE sites SET 
 		trunk_version_id =branch_version_id, 
 		branch_version_id=branch_version_id+1 
-		WHERE site_id=:site_id;
+	WHERE site_id=:site_id;
 	''', params)
 	# Insert a changelog entry for the change
 	con.execute('''
@@ -255,9 +261,8 @@ def rollback_site(con, site_id, to_version_id):
 	# This effectively "deletes" any rows that shouldn't exist at the version we're rolling back to. 
 	# We don't actually want to delete any data, since that would make it impossible to rollback to previous points after this rollback
 	con.execute('''
-	INSERT INTO site_options(version_id, site_id, brand, pn, dp_id, on_site) 
-	SELECT :branch_version_id, a.site_id, a.brand, a.pn, a.dp_id, null 
-	FROM (
+	WITH _tmp_tble_items_to_delete(version_id, site_id, brand, pn, dp_id) AS
+	(
 		SELECT MAX(version_id) as version_id, site_id, brand, pn, dp_id
 			FROM site_options 
 			WHERE version_id<=:branch_version_id AND site_id=:site_id
@@ -266,7 +271,9 @@ def rollback_site(con, site_id, to_version_id):
 		SELECT version_id, site_id, brand, pn, dp_id
 			FROM site_options
 			WHERE version_id=:branch_version_id AND site_id=:site_id
-	) a;
+	)
+	INSERT INTO site_options(version_id, site_id, brand, pn, dp_id, on_site) 
+	SELECT :branch_version_id, site_id, brand, pn, dp_id, NULL FROM _tmp_tble_items_to_delete;
 	''', params)
 	# Create a description for the publish
 	desc = f"Rolled back site settings to version #{to_version_id}"
